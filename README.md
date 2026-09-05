@@ -70,6 +70,47 @@ A block is left alone when it:
 - references a local variable named `it` from an enclosing scope, or assigns to `it`
 - already names its argument `it` — dropping it would revive an `it` from an enclosing scope (`Style/ItAssignment` forbids the name instead)
 - defines a callable or a method — `->(x) { }`, `lambda`, `proc`, `Proc.new`, `define_method`, `define_singleton_method` — since the parameter list is part of its API and `it` drops the parameter name
+- is nested inside RSpec's custom matcher DSL (`RSpec::Matchers.define`) as `match`, `match_when_negated`, `match_unless_raises`, `chain`, `failure_message`, `failure_message_when_negated` or `description` — these blocks are turned into actual methods internally, where `it`'s implicit binding does not reliably survive (see below)
+- matches a project-specific entry in `IgnoredBlockContexts` (see below)
+
+The `Proc.new`/`lambda`/etc. and RSpec cases above are built into the cop and always checked — they cannot be turned off. `IgnoredBlockContexts` is how a project adds its own such cases on top of them.
+
+#### `IgnoredBlockContexts`
+
+A block can be unsafe to convert for reasons specific to how it's used, not just because of what method it's passed to — this is exactly why RSpec's matcher DSL and `Proc.new` are already built-in exceptions above. `IgnoredBlockContexts` lets a project name its *own* such cases the same way, each scoped to the call it's nested inside (or, for `Proc.new`-like cases, matched wherever it's called), so a generic method name doesn't suppress the check on unrelated code.
+
+```ruby
+# bad
+RSpec::Matchers.define :be_valid_foo do
+  match { it.is_a?(Foo) && it.valid? }
+end
+
+# good
+RSpec::Matchers.define :be_valid_foo do
+  match { |actual| actual.is_a?(Foo) && actual.valid? }
+end
+```
+
+`IgnoredBlockContexts` is empty by default. The built-in cases above are not stored in this config option at all — they're checked independently — so setting `IgnoredBlockContexts` in your `.rubocop.yml` only *adds* entries; it can never disable a built-in case:
+
+```yaml
+Style/PreferItParameter:
+  IgnoredBlockContexts:
+    OurDsl.define_matcher:
+      - our_custom_dsl_method
+```
+
+A block named this way is only ignored when it's nested inside the matching enclosing call — so `our_custom_dsl_method { |x| x.foo }` written anywhere else is unaffected and still converted, even though the method name is the same. This is what keeps a generic name from silently suppressing the check on unrelated code.
+
+An enclosing call written without a receiver (`define_matcher:` instead of `OurDsl.define_matcher:`) only matches a bare call with no receiver at all. Write `*.define_matcher:` to match regardless of receiver instead — the same way `lambda` or `define_method` are matched in the exceptions list above. A value of `nil` (an entry with nothing under it) means the call itself is unsafe wherever it appears, with no nesting required — this is how the built-in `Proc.new` case works internally:
+
+```yaml
+Style/PreferItParameter:
+  IgnoredBlockContexts:
+    "*.our_dsl_method":  # any receiver, no nesting required
+    OurDsl.define_matcher:  # this exact receiver, blocks nested inside it
+      - our_custom_dsl_method
+```
 
 ## Related cops
 
@@ -105,6 +146,7 @@ The autocorrection is marked unsafe (`SafeAutoCorrect: false`), so `rubocop -a` 
 - A local variable or parameter named `it` takes precedence over the block parameter. The cop skips a block that references such a variable, but it cannot detect one that the block never references — there the autocorrection silently changes what the block sees. Enabling `Style/ItAssignment` is therefore a prerequisite.
 - `Proc#parameters` loses the argument name: `[[:opt, :x]]` becomes `[[:opt]]`. Blocks that define a callable or a method are excluded for this reason, but a block captured with `&block` and introspected elsewhere is still affected.
 - `binding.local_variable_get(:x)` inside the block stops working.
+- A block can be unsafe to convert for reasons specific to its own context — e.g. a library that turns it into an actual method internally may stop passing it an argument at all. RSpec's custom matcher DSL is built in for this reason (see [Exceptions](#exceptions)); [`IgnoredBlockContexts`](#ignoredblockcontexts) lets a project name the same kind of case for a library this cop doesn't know about.
 
 ## Requirements
 
