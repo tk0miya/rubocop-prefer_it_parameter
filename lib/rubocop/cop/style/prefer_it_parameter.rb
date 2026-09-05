@@ -15,9 +15,19 @@ module RuboCop
       #   change what the block sees. Enabling `Style/ItAssignment` rules such names
       #   out. Additionally, `it` drops the argument name from `Proc#parameters`
       #   (`[[:opt, :x]]` becomes `[[:opt]]`) and breaks
-      #   `binding.local_variable_get(:x)` inside the block. Blocks that define a
-      #   callable or a method are skipped for that reason, but a block captured with
-      #   `&block` and introspected elsewhere is still affected.
+      #   `binding.local_variable_get(:x)` inside the block. A block captured with
+      #   `&block` and introspected elsewhere is still affected even when none of
+      #   the below applies.
+      #
+      #   Some blocks are unsafe to convert for reasons this cop cannot see from the
+      #   AST alone — `->(x) { }`, `lambda`, `proc`, `Proc.new`, `define_method` and
+      #   `define_singleton_method` all define a callable or a method, where the
+      #   parameter list is part of its API and `it` drops the parameter name; RSpec's
+      #   custom matcher DSL turns `match`, `chain` and similar blocks into actual
+      #   methods internally, where `it`'s implicit binding does not reliably survive.
+      #   These are all built in and cannot be turned off. `IgnoredBlockContexts` lets
+      #   a project add its own cases the same way, scoped to where they're nested so
+      #   a generic method name doesn't suppress the check on unrelated code.
       #
       # @example
       #   # bad
@@ -47,6 +57,11 @@ module RuboCop
       #   ->(x) { puts x }
       #   define_method(:m) { |x| x + 1 }
       #
+      #   # good - RSpec turns this block into a method internally, where `it` cannot be trusted
+      #   RSpec::Matchers.define :be_valid_foo do
+      #     match { |actual| actual.valid? }
+      #   end
+      #
       #   # bad
       #   items.map { |item| {item:} }
       #
@@ -64,7 +79,25 @@ module RuboCop
 
         INNER_BLOCK_TYPES = %i[block numblock itblock].freeze #: Array[Symbol]
 
-        CALLABLE_METHODS = %i[define_method define_singleton_method lambda proc].freeze #: Array[Symbol]
+        # Maps a call to the method names that are unsafe when nested inside it, in
+        # the same format as the `IgnoredBlockContexts` config option (see
+        # `matches_context?` for the exact matching rules). A `nil` value means the
+        # call itself is unsafe, wherever it appears, with no nesting required —
+        # `lambda`/`proc`/`define_method`/`define_singleton_method` match regardless
+        # of receiver (`*.`), `Proc.new` requires that exact receiver. These are core
+        # Ruby behavior and RSpec's widely-used matcher DSL, so unlike
+        # `IgnoredBlockContexts` they're built in and cannot be turned off.
+        BUILTIN_IGNORED_BLOCK_CONTEXTS = {
+          "*.lambda" => nil,
+          "*.proc" => nil,
+          "*.define_method" => nil,
+          "*.define_singleton_method" => nil,
+          "Proc.new" => nil,
+          "RSpec::Matchers.define" => %i[
+            match match_when_negated match_unless_raises chain
+            failure_message failure_message_when_negated description
+          ]
+        }.freeze #: Hash[String, Array[Symbol]?]
 
         # @rbs node: RuboCop::AST::BlockNode
         def on_block(node) #: void
@@ -86,7 +119,7 @@ module RuboCop
         # @rbs body: RuboCop::AST::Node
         def convertible_argument_name(node, body) #: Symbol?
           return unless node.single_line?
-          return if defines_callable?(node)
+          return if ignored?(node)
 
           name = sole_argument_name(node)
           return unless name
@@ -105,24 +138,90 @@ module RuboCop
           lvar_references(body, :it).any? || reassigned?(body, :it)
         end
 
-        # `it` drops the parameter name from `Proc#parameters`, which changes the
-        # meaning of a block that defines a callable object or a method: there the
-        # parameter list is part of the API, unlike a block passed to `each` or `map`.
+        # A block can be unsafe to convert for reasons specific to how it's used, not
+        # just because of what method it's passed to — see `BUILTIN_IGNORED_BLOCK_CONTEXTS`
+        # for the built-in cases and `matches_context?` for what a context means.
+        # `IgnoredBlockContexts` lets a project add its own cases the same way; it is
+        # checked separately from, and in addition to, the built-in ones, so a project
+        # can never accidentally disable those by overriding this config option.
         #
         # @rbs node: RuboCop::AST::BlockNode
-        def defines_callable?(node) #: bool
-          CALLABLE_METHODS.include?(node.method_name) || proc_new?(node)
+        def ignored?(node) #: bool
+          ignored_in?(node, BUILTIN_IGNORED_BLOCK_CONTEXTS) || ignored_in?(node, ignored_block_contexts)
         end
 
         # @rbs node: RuboCop::AST::BlockNode
-        def proc_new?(node) #: bool
-          return false unless node.method?(:new)
+        # @rbs contexts: Hash[String, Array[Symbol]?]
+        def ignored_in?(node, contexts) #: bool
+          contexts.any? { |context, method_names| matches_context?(node, context, method_names) }
+        end
 
-          receiver = node.send_node.receiver
-          return false unless receiver&.const_type?
+        # @rbs @ignored_block_contexts: Hash[String, Array[Symbol]?]
 
-          const = receiver #: RuboCop::AST::ConstNode
-          const.short_name == :Proc
+        def ignored_block_contexts #: Hash[String, Array[Symbol]?]
+          default = {} #: Hash[String, Array[String]?]
+          @ignored_block_contexts ||= cop_config.fetch("IgnoredBlockContexts", default).transform_values do |names|
+            names&.map(&:to_sym)
+          end
+        end
+
+        # A `nil` (or empty) `method_names` means `context` describes the node's own
+        # call, checked with no nesting required — this is how `Proc.new` and the
+        # receiver-blind `*.lambda`-style entries work. Otherwise, `context` names an
+        # enclosing call the node must be nested inside, and `method_names` are the
+        # names that are unsafe within it — this is how RSpec's matcher DSL works.
+        #
+        # @rbs node: RuboCop::AST::BlockNode
+        # @rbs context: String
+        # @rbs method_names: Array[Symbol]?
+        def matches_context?(node, context, method_names) #: bool
+          if method_names.nil? || method_names.empty?
+            receiver_source, method_name = parse_context(context)
+            context_call?(node.send_node, receiver_source, method_name)
+          else
+            method_names.include?(node.method_name) && nested_in_context?(node, context)
+          end
+        end
+
+        # `numblock` and `itblock` (a `_1` or `it` block) are included since
+        # rubocop-ast maps both to `BlockNode`, so `#send_node` works the same as for
+        # a plain `block`.
+        #
+        # @rbs node: RuboCop::AST::BlockNode
+        # @rbs context: String
+        def nested_in_context?(node, context) #: bool
+          receiver_source, method_name = parse_context(context)
+          node.each_ancestor(*INNER_BLOCK_TYPES).any? do |ancestor|
+            block_ancestor = ancestor #: RuboCop::AST::BlockNode
+            context_call?(block_ancestor.send_node, receiver_source, method_name)
+          end
+        end
+
+        # @rbs context: String
+        def parse_context(context) #: [String, String]
+          receiver_source, _dot, method_name = context.rpartition(".")
+          [receiver_source, method_name]
+        end
+
+        # `receiver_source` of `"*"` matches any receiver, or none. An empty
+        # `receiver_source` (`context` had no `.`) requires no receiver at all.
+        # Otherwise the receiver's source must match exactly, modulo a leading `::`
+        # on either side — `::Proc` is not receiver-less, its source is `"::Proc"`
+        # (a `cbase`-prefixed const), so this is what lets `Proc.new` also match
+        # `::Proc.new`.
+        #
+        # @rbs send_node: RuboCop::AST::SendNode
+        # @rbs receiver_source: String
+        # @rbs method_name: String
+        def context_call?(send_node, receiver_source, method_name) #: bool
+          return false unless send_node.method?(method_name.to_sym)
+          return true if receiver_source == "*"
+          return send_node.receiver.nil? if receiver_source.empty?
+
+          actual_receiver_source = send_node.receiver&.source
+          return false unless actual_receiver_source
+
+          actual_receiver_source.delete_prefix("::") == receiver_source.delete_prefix("::")
         end
 
         # @rbs node: RuboCop::AST::BlockNode

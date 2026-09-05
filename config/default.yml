@@ -4,3 +4,4 @@ Style/PreferItParameter:
   Enabled: true
   SafeAutoCorrect: false
   VersionAdded: '1.0'
+  IgnoredBlockContexts: {}

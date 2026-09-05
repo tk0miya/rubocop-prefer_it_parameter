@@ -181,6 +181,201 @@ RSpec.describe RuboCop::Cop::Style::PreferItParameter, :config do
           RUBY
         end
       end
+
+      context "with RSpec's custom matcher DSL" do
+        # RSpec's `RSpec::Matchers.define` turns `match`/`chain`/etc. blocks into
+        # actual methods internally, where `it`'s implicit binding does not
+        # reliably survive. This is built in and always checked, regardless of
+        # `IgnoredBlockContexts` — a project can add its own such cases, but
+        # cannot remove this one.
+        context "when `match` is nested in `RSpec::Matchers.define`" do
+          it "does not register an offense" do
+            expect_no_offenses(<<~RUBY)
+              RSpec::Matchers.define :be_valid_foo do
+                match { |actual| actual.is_a?(Foo) && actual.valid? }
+              end
+            RUBY
+          end
+        end
+
+        context "when `chain` is nested in `RSpec::Matchers.define`" do
+          it "does not register an offense" do
+            expect_no_offenses(<<~RUBY)
+              RSpec::Matchers.define :be_valid_foo do
+                chain(:with) { |message| @message = message }
+              end
+            RUBY
+          end
+        end
+
+        context "when `match` is nested nowhere" do
+          it "registers an offense and corrects" do
+            expect_offense(<<~RUBY)
+              match { |actual| actual.is_a?(Foo) && actual.valid? }
+                      ^^^^^^^^ Use the `it` block parameter instead of the named block argument `actual`.
+            RUBY
+
+            expect_correction(<<~RUBY)
+              match { it.is_a?(Foo) && it.valid? }
+            RUBY
+          end
+        end
+
+        context "when a `match` method unrelated to RSpec shares the name" do
+          it "registers an offense and corrects" do
+            expect_offense(<<~RUBY)
+              class CustomRouter
+                match { |request| request.path == "/" }
+                        ^^^^^^^^^ Use the `it` block parameter instead of the named block argument `request`.
+              end
+            RUBY
+
+            expect_correction(<<~RUBY)
+              class CustomRouter
+                match { it.path == "/" }
+              end
+            RUBY
+          end
+        end
+
+        context "when the enclosing receiver does not match" do
+          it "registers an offense and corrects" do
+            expect_offense(<<~RUBY)
+              SomeOtherThing.define do
+                match { |actual| actual.valid? }
+                        ^^^^^^^^ Use the `it` block parameter instead of the named block argument `actual`.
+              end
+            RUBY
+
+            expect_correction(<<~RUBY)
+              SomeOtherThing.define do
+                match { it.valid? }
+              end
+            RUBY
+          end
+        end
+
+        context "when nested in `RSpec::Matchers.define` but the method name is not one of the built-in ones" do
+          it "registers an offense and corrects" do
+            expect_offense(<<~RUBY)
+              RSpec::Matchers.define :be_valid_foo do
+                some_other_method { |actual| actual.valid? }
+                                    ^^^^^^^^ Use the `it` block parameter instead of the named block argument `actual`.
+              end
+            RUBY
+
+            expect_correction(<<~RUBY)
+              RSpec::Matchers.define :be_valid_foo do
+                some_other_method { it.valid? }
+              end
+            RUBY
+          end
+        end
+
+        context "when `IgnoredBlockContexts` is explicitly cleared" do
+          let(:cop_config) { { "IgnoredBlockContexts" => {} } }
+
+          it "still does not register an offense" do
+            expect_no_offenses(<<~RUBY)
+              RSpec::Matchers.define :be_valid_foo do
+                match { |actual| actual.valid? }
+              end
+            RUBY
+          end
+        end
+      end
+    end
+
+    context "with `IgnoredBlockContexts`" do
+      # `IgnoredBlockContexts` lets a project name its own blocks that are unsafe
+      # to convert, on top of the built-in cases (RSpec's matcher DSL, `Proc.new`,
+      # etc. — see "when the block defines a callable").
+      context "with a context that has no receiver" do
+        let(:cop_config) { { "IgnoredBlockContexts" => { "define_matcher" => %w[our_custom_dsl_method] } } }
+
+        context "when nested inside the bare defining call" do
+          it "does not register an offense" do
+            expect_no_offenses(<<~RUBY)
+              define_matcher do
+                our_custom_dsl_method { |x| x.foo }
+              end
+            RUBY
+          end
+        end
+
+        context "when outside the defining call" do
+          it "registers an offense and corrects" do
+            expect_offense(<<~RUBY)
+              our_custom_dsl_method { |x| x.foo }
+                                      ^^^ Use the `it` block parameter instead of the named block argument `x`.
+            RUBY
+
+            expect_correction(<<~RUBY)
+              our_custom_dsl_method { it.foo }
+            RUBY
+          end
+        end
+
+        context "when the defining call has a receiver" do
+          it "registers an offense and corrects" do
+            expect_offense(<<~RUBY)
+              OurDsl.define_matcher do
+                our_custom_dsl_method { |x| x.foo }
+                                        ^^^ Use the `it` block parameter instead of the named block argument `x`.
+              end
+            RUBY
+
+            expect_correction(<<~RUBY)
+              OurDsl.define_matcher do
+                our_custom_dsl_method { it.foo }
+              end
+            RUBY
+          end
+        end
+
+        context "when the defining call itself uses `it`" do
+          it "does not register an offense" do
+            expect_no_offenses(<<~RUBY)
+              define_matcher do
+                our_custom_dsl_method { |x| x.foo }
+                it.finish
+              end
+            RUBY
+          end
+        end
+      end
+
+      context "with a receiver-qualified context" do
+        let(:cop_config) { { "IgnoredBlockContexts" => { "OurDsl.define_matcher" => %w[our_custom_dsl_method] } } }
+
+        it "does not register an offense when nested inside the matching defining call" do
+          expect_no_offenses(<<~RUBY)
+            OurDsl.define_matcher do
+              our_custom_dsl_method { |x| x.foo }
+            end
+          RUBY
+        end
+      end
+
+      context "with a receiver-blind (`*.`) flat context" do
+        let(:cop_config) { { "IgnoredBlockContexts" => { "*.our_flat_method" => nil } } }
+
+        context "when called with no receiver" do
+          it "does not register an offense" do
+            expect_no_offenses(<<~RUBY)
+              our_flat_method { |x| x.foo }
+            RUBY
+          end
+        end
+
+        context "when called on any receiver" do
+          it "does not register an offense" do
+            expect_no_offenses(<<~RUBY)
+              OurDsl.our_flat_method { |x| x.foo }
+            RUBY
+          end
+        end
+      end
     end
 
     context "with `new`" do
@@ -209,6 +404,22 @@ RSpec.describe RuboCop::Cop::Style::PreferItParameter, :config do
 
           expect_correction(<<~RUBY)
             Thread.new { puts it }
+          RUBY
+        end
+      end
+
+      context "when the receiver is `Proc` reached through another namespace" do
+        # Only a bare `Proc`/`::Proc` receiver is recognized, by source text —
+        # not whatever constant a namespaced reference like this would actually
+        # resolve to at runtime.
+        it "registers an offense and corrects" do
+          expect_offense(<<~RUBY)
+            Foo::Bar::Proc.new { |x| x.foo }
+                                 ^^^ Use the `it` block parameter instead of the named block argument `x`.
+          RUBY
+
+          expect_correction(<<~RUBY)
+            Foo::Bar::Proc.new { it.foo }
           RUBY
         end
       end
