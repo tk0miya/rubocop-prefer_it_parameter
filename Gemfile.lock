@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    rubocop-prefer_it_parameter (1.0.0)
+    rubocop-prefer_it_parameter (1.1.0)
       lint_roller (~> 1.0)
       rubocop (>= 1.75.0)
 
@@ -214,7 +214,7 @@ CHECKSUMS
   rspec-support (3.13.7) sha256=0640e5570872aafefd79867901deeeeb40b0c9875a36b983d85f54fb7381c47c
   rubocop (1.90.0) sha256=9eb4c065b5c5154e4ef554c547972f3905a9eb6b53e657e580b6796b54bf8242
   rubocop-ast (1.50.0) sha256=b9ca88300da0803ee222ad20cdb30494c0a784eed06fdc35d254b06d662788db
-  rubocop-prefer_it_parameter (1.0.0)
+  rubocop-prefer_it_parameter (1.1.0)
   rubocop-rake (0.7.1) sha256=3797f2b6810c3e9df7376c26d5f44f3475eda59eb1adc38e6f62ecf027cbae4d
   rubocop-rbs_inline (2.0.0) sha256=2131e1e95feccb7be253000f15d1ddfa7aff344d39e38d4b48fcf412a5c1992c
   rubocop-rspec (3.10.2) sha256=0b3e2ecc592cd10ecbf0095bb58d1e357905276e069643523cc19eb7495f65e2

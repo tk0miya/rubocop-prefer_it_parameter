@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-07
+
 - `Style/PreferItParameter`: recognize RSpec's custom matcher DSL (`RSpec::Matchers.define`)
   as a built-in exception, alongside `lambda`/`proc`/`Proc.new`/`define_method`/
   `define_singleton_method`; these are always checked and cannot be disabled.
