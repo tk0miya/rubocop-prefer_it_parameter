@@ -12,6 +12,7 @@ group :development do
   gem "rbs-inline"
   gem "rspec"
   gem "rubocop"
+  gem "rubocop-instance_variable_access"
   gem "rubocop-rake"
   gem "rubocop-rbs_inline"
   gem "rubocop-rspec"
