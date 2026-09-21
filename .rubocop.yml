@@ -5,6 +5,7 @@ AllCops:
   TargetRubyVersion: 3.4
 
 plugins:
+  - rubocop-instance_variable_access
   - rubocop-prefer_it_parameter
   - rubocop-rake
   - rubocop-rbs_inline
