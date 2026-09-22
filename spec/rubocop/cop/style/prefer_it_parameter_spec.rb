@@ -348,7 +348,7 @@ RSpec.describe RuboCop::Cop::Style::PreferItParameter, :config do
       context "with a receiver-qualified context" do
         let(:cop_config) { { "IgnoredBlockContexts" => { "OurDsl.define_matcher" => %w[our_custom_dsl_method] } } }
 
-        it "does not register an offense when nested inside the matching defining call" do
+        it "does not register an offense" do
           expect_no_offenses(<<~RUBY)
             OurDsl.define_matcher do
               our_custom_dsl_method { |x| x.foo }
